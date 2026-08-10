@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.7.2 — 2026-08-10
+
+- A degraded SUGGEST write now cleans up after itself. Google's
+  honouring of the preview enrollment can flap for minutes at a time
+  (seen live): the API accepts the suggestion request and silently edits
+  the document directly. Remy already detected this after every batch;
+  now it also **undoes its own accidental direct write and re-proposes
+  everything as coloured markup** — after verifying, position by
+  position, that nothing else changed in between. Only when a concurrent
+  edit makes the rollback unsafe does it fall back to the old honest
+  report, which now also says the degradation may be temporary and that
+  `probe` re-enables suggestions.
+
 ## 0.7.1 — 2026-08-07
 
 - Chat and Cowork catch up with 0.6/0.7: the MCP server gains

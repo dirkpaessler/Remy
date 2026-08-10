@@ -670,6 +670,38 @@ class TestMarkdownImport(unittest.TestCase):
                          ["para", "para", "table"])
 
 
+# --------------------------------------------------------------- degradation rollback
+
+class TestDegradedRollback(unittest.TestCase):
+    """When SUGGEST silently degrades to a direct write, Remy undoes its
+    own write and re-proposes as markup — the user never cleans up."""
+
+    def test_replace_is_inverted_exactly(self):
+        edits = [{"doc_range": (5, 10), "old": "hello", "new": "hi"}]
+        reqs, placed = remy.degraded_rollback_requests(edits)
+        self.assertEqual(placed, [(5, edits[0])])
+        self.assertEqual(reqs[0]["deleteContentRange"]["range"],
+                         {"startIndex": 5, "endIndex": 7})
+        self.assertEqual(reqs[1]["insertText"],
+                         {"location": {"index": 5}, "text": "hello"})
+
+    def test_later_edits_shift_by_earlier_deltas(self):
+        edits = [{"doc_range": (5, 10), "old": "hello", "new": "hi"},
+                 {"doc_range": (20, 20), "old": "", "new": "abc"}]
+        _, placed = remy.degraded_rollback_requests(edits)
+        self.assertEqual([p for p, _ in placed], [5, 17],
+                         "the second edit sits 3 units earlier: 'hello'→"
+                         "'hi' shrank the document by 3")
+
+    def test_pure_deletion_restores_the_old_text(self):
+        edits = [{"doc_range": (5, 10), "old": "hello", "new": ""}]
+        reqs, placed = remy.degraded_rollback_requests(edits)
+        self.assertEqual([next(iter(r)) for r in reqs], ["insertText"],
+                         "nothing to delete — the write only removed text")
+        self.assertEqual(reqs[0]["insertText"],
+                         {"location": {"index": 5}, "text": "hello"})
+
+
 # --------------------------------------------------------------- runs & rewrite
 
 class TestRunsAndRewrite(unittest.TestCase):

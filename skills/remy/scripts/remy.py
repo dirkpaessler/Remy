@@ -32,7 +32,7 @@ SCOPES = [
     "https://www.googleapis.com/auth/documents",
     "https://www.googleapis.com/auth/drive",
 ]
-VERSION = "0.7.1"  # keep in step with .claude-plugin/plugin.json + CHANGELOG
+VERSION = "0.7.2"  # keep in step with .claude-plugin/plugin.json + CHANGELOG
 # The version file is a GitHub release asset (published by the tag workflow),
 # so GitHub's public download counter doubles as an anonymous tally of active
 # installations — nothing about the user or their documents is ever sent.
@@ -1061,6 +1061,38 @@ def enforce_language(dt, edits, force=False):
     )
 
 
+def degraded_rollback_requests(edits):
+    """Undo a batch that SUGGEST silently applied as a direct write. Pure.
+
+    The direct write is deterministic — per edit, delete (s, t) and insert
+    the new text at s — so the post-write position of every inserted text
+    is computable: its own start, shifted by the length deltas of all
+    edits before it. The inverse deletes the inserted text and restores
+    the old text, back to front.
+
+    Returns (requests, placed) where placed is [(post_write_pos, edit)] so
+    the caller can verify each inserted text really sits at its computed
+    position before trusting the arithmetic (a human may have typed in
+    between — then we do NOT touch the document).
+    """
+    asc = sorted(edits, key=lambda e: e["doc_range"][0])
+    placed, delta = [], 0
+    for e in asc:
+        s, t = e["doc_range"]
+        placed.append((s + delta, e))
+        delta += u16len(e["new"]) - (t - s)
+    requests = []
+    for pos, e in sorted(placed, key=lambda x: x[0], reverse=True):
+        n = u16len(e["new"])
+        if n:
+            requests.append({"deleteContentRange": {
+                "range": {"startIndex": pos, "endIndex": pos + n}}})
+        if e["old"]:
+            requests.append({"insertText": {"location": {"index": pos},
+                                            "text": e["old"]}})
+    return requests, placed
+
+
 def can_edit(drive, doc_id):
     try:
         meta = drive.files().get(
@@ -1147,15 +1179,46 @@ def apply_edits(docs, drive, doc_id, edits, fallback=True, direct=False,
                                 detail=str(err))
     after_doc = fetch_document(docs, doc_id)
     if count_suggestions(after_doc) <= before:
-        # SUGGEST silently degraded to a direct write after all.
+        # SUGGEST silently degraded to a direct write (Google's honouring
+        # of the preview can flap for minutes at a time — seen live).
+        # Undo our own write and re-propose everything as markup; the
+        # user should never have to clean up after us.
         save_state({**load_state(), "suggest_supported": False})
+        dt_after = DocText(after_doc)
+        undo, placed = degraded_rollback_requests(edits)
+        verified = all(
+            any(dt_after.doc_index(a) == pos
+                for a, b in dt_after.find(e["new"]))
+            for pos, e in placed if e["new"])
+        if verified and undo and can_edit(drive, doc_id):
+            try:
+                docs.documents().batchUpdate(
+                    documentId=doc_id, body={"requests": undo}).execute()
+                result = apply_markup(docs, doc_id, edits)
+                result["mode"] = "markup-after-degradation"
+                result["note"] = (
+                    "Real suggestions silently degraded to a direct write "
+                    "mid-batch; Remy undid its own write and re-proposed "
+                    "everything as coloured markup instead — nothing to "
+                    "clean up. Suggestion mode is off until a successful "
+                    "`remy.py probe`; the degradation is often temporary. "
+                    + str(result.get("note", "")))
+                return result
+            except HttpError:
+                pass  # rollback failed — report honestly below
         return {"ok": False, "mode": "direct-edit-unintended", "edits": len(edits),
                 "error": "The API accepted SUGGEST but did not create "
                          "suggestions — the edits went into the document "
-                         "directly.",
+                         "directly, and an automatic rollback was not "
+                         "possible (the document may have changed "
+                         "concurrently).",
                 "action_required": "Undo via File > Version history in the "
                                    "document. Remy has disabled suggestion "
-                                   "mode and will use comments from now on."}
+                                   "mode for now.",
+                "may_be_temporary": "Google's preview honouring can flap. "
+                                    "Run `remy.py probe <doc>` later — a "
+                                    "successful probe re-enables "
+                                    "suggestions."}
     return {"ok": True, "mode": "suggestion", "edits": len(edits)}
 
 
