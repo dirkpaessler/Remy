@@ -670,6 +670,38 @@ class TestMarkdownImport(unittest.TestCase):
                          ["para", "para", "table"])
 
 
+# --------------------------------------------------------------- tidy
+
+class TestTidy(unittest.TestCase):
+    """Runs of empty paragraphs collapse to one — the stray paragraph
+    marks that otherwise get cleaned up by hand."""
+
+    def test_mid_document_run_keeps_its_first_empty(self):
+        doc = document("A\n", "\n", "\n", "\n", "B\n")
+        ranges = remy.empty_paragraph_runs(doc["body"]["content"])
+        self.assertEqual(ranges, [(4, 6)],
+                         "three empties between A and B: keep the first, "
+                         "delete the second and third")
+
+    def test_run_at_document_end_keeps_only_the_final_mark(self):
+        doc = document("A\n", "\n", "\n", "\n")
+        ranges = remy.empty_paragraph_runs(doc["body"]["content"])
+        self.assertEqual(ranges, [(3, 5)],
+                         "the final paragraph mark is undeletable, so "
+                         "everything before it goes")
+
+    def test_a_single_empty_paragraph_is_respected(self):
+        doc = document("A\n", "\n", "B\n")
+        self.assertEqual(
+            remy.empty_paragraph_runs(doc["body"]["content"]), [])
+
+    def test_heading_zero_formats_back_to_body_text(self):
+        dt = remy.DocText(document("Head\n", "after\n"))
+        e = remy.build_format_edit(dt, 0, 4, heading=0)
+        self.assertEqual(e["named_style"], "NORMAL_TEXT")
+        self.assertEqual(e["doc_range"], (1, 6))
+
+
 # --------------------------------------------------------------- degradation rollback
 
 class TestDegradedRollback(unittest.TestCase):

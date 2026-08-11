@@ -77,8 +77,14 @@ human decides what actually disappears. Resolve with
 
 **Format changes** follow the same rule. `suggest format` strikes the old
 text through *in its old format* and re-inserts the same text *in the new
-format* (heading 1-6, bold, italic, or a link), mint-highlighted; `markup
-accept|reject` resolves it like any other change. For `--heading`, `--find`
+format* (heading 1-6 — and 0 turns a heading back into body text — bold,
+italic, or a link), mint-highlighted; `markup accept|reject` resolves it
+like any other change. `tidy` collapses runs of empty paragraphs: they are
+shaded pink as a proposed deletion by default; `--direct` (with the user's
+consent) removes them immediately. **Always `--dry-run` first** and scope
+with `--context`/`--nth` — empty lines elsewhere in the document may be
+deliberate layout, and a document-wide sweep needs the user's explicit
+blessing. For `--heading`, `--find`
 must cover a whole paragraph. `suggest insert --heading N` inserts new text
 as a ready-styled heading. Remy never restyles text in place except with
 `--direct`.
@@ -182,6 +188,7 @@ remy.py md <url> --file report.md [--replace] [--dry-run]
 remy.py runs <url>                          # dump text runs (template for rewrite)
 remy.py rewrite <url> --file out.json [--dry-run] --direct
 remy.py table <url> [--nth N] [--dry-run] --direct
+remy.py tidy <url> [--dry-run] [--context "..."] [--nth N] [--direct]
 remy.py finish <url> [--sign-off --summary "..." --open-items "..."]
 remy.py check|probe <url>
 remy.py whoami                              # the identity Remy acts as

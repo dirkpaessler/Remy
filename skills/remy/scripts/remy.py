@@ -32,7 +32,7 @@ SCOPES = [
     "https://www.googleapis.com/auth/documents",
     "https://www.googleapis.com/auth/drive",
 ]
-VERSION = "0.7.2"  # keep in step with .claude-plugin/plugin.json + CHANGELOG
+VERSION = "0.8.0"  # keep in step with .claude-plugin/plugin.json + CHANGELOG
 # The version file is a GitHub release asset (published by the tag workflow),
 # so GitHub's public download counter doubles as an anonymous tally of active
 # installations — nothing about the user or their documents is ever sent.
@@ -916,6 +916,7 @@ def post_as_comments(drive, doc_id, edits, note, **extra):
 
 
 NAMED_HEADINGS = {n: f"HEADING_{n}" for n in range(1, 7)}
+NAMED_HEADINGS[0] = "NORMAL_TEXT"  # --heading 0: back to body text
 
 
 def build_format_edit(dt, a, b, heading=None, bold=None, italic=None,
@@ -936,7 +937,7 @@ def build_format_edit(dt, a, b, heading=None, bold=None, italic=None,
         e["italic"] = True
     if link:
         e["link"] = link
-    if heading:
+    if heading is not None:
         # A heading is a paragraph property: the anchor must cover a whole
         # paragraph, and its newline travels with the edit so accepting
         # leaves no empty line behind.
@@ -1326,7 +1327,8 @@ def cmd_suggest(args):
             e["named_style"] = NAMED_HEADINGS[args.heading]
         edits.append(e)
     elif args.action == "format":
-        if not (args.heading or args.bold or args.italic or args.link):
+        if not (args.heading is not None or args.bold or args.italic
+                or args.link):
             fail("Nothing to format.",
                  hint="Give --heading N, --bold, --italic and/or "
                       "--link URL.")
@@ -1380,12 +1382,51 @@ def cmd_markup(args):
                                           shaded_ins, shaded_del)
 
     from googleapiclient.errors import HttpError
+    skipped = 0
     try:
         docs.documents().batchUpdate(
             documentId=doc_id, body={"requests": requests}).execute()
-    except HttpError as err:
-        fail(f"markup {args.action} failed", detail=str(err))
+    except HttpError:
+        # The batch is atomic — one refused deletion (e.g. an empty
+        # shaded paragraph right before a table, seen live) kills all of
+        # it and would strand the markup as unresolvable, the worst
+        # failure mode there is. Re-run one by one (descending order
+        # keeps the skipped ones from shifting anything), then unmark
+        # whatever could not be removed.
+        for req in requests:
+            try:
+                docs.documents().batchUpdate(
+                    documentId=doc_id,
+                    body={"requests": [req]}).execute()
+            except HttpError:
+                skipped += 1
+        if skipped:
+            leftover = fetch_document(docs, doc_id)
+            l_ins, l_del = markup_ranges(leftover)
+            s_ins, s_del = shaded_paragraphs(leftover)
+            plain = {"backgroundColor": {}, "strikethrough": False}
+            clear = [{"updateTextStyle": {
+                "range": {"startIndex": a, "endIndex": b},
+                "textStyle": plain,
+                "fields": "backgroundColor,strikethrough"}}
+                for a, b, _ in sorted(l_ins + l_del, reverse=True)]
+            clear += [{"updateParagraphStyle": {
+                "range": {"startIndex": a, "endIndex": b},
+                "paragraphStyle": {"shading": {}}, "fields": "shading"}}
+                for a, b, _ in sorted(s_ins + s_del, reverse=True)]
+            if clear:
+                try:
+                    docs.documents().batchUpdate(
+                        documentId=doc_id,
+                        body={"requests": clear}).execute()
+                except HttpError:
+                    pass
     out({"ok": True, "docId": doc_id, "action": args.action,
+         **({"skipped": skipped,
+             "skipped_note": "Some ranges were refused by the API; their "
+                             "text stayed and was unmarked instead — "
+                             "remove those lines by hand if unwanted."}
+            if skipped else {}),
          "insertions": len(ins) + len(shaded_ins),
          "deletions": len(dele) + len(shaded_del),
          "shaded_paragraphs": len(shaded_ins) + len(shaded_del),
@@ -2757,6 +2798,21 @@ def md_import(docs, doc_id, blocks):
         except HttpError as err:
             fail("Table insert failed", detail=str(err))
         md_fill_table(docs, doc_id, starts[n], blocks[n])
+        # The block's placeholder paragraph now sits as a stray empty line
+        # right after the table — remove it. Best effort: where the Docs
+        # model insists on a paragraph (table at body end, or two tables
+        # back to back), the delete is refused and the line simply stays.
+        try:
+            after = fetch_document(docs, doc_id)
+            el = md_first_table_at(after, starts[n])
+            if el:
+                docs.documents().batchUpdate(
+                    documentId=doc_id, body={"requests": [
+                        {"deleteContentRange": {"range": {
+                            "startIndex": el["endIndex"],
+                            "endIndex": el["endIndex"] + 1}}}]}).execute()
+        except HttpError:
+            pass
 
     return {"paragraphs": sum(1 for b in blocks if b["type"] == "para"),
             "tables": sum(1 for b in blocks if b["type"] == "table"),
@@ -3063,6 +3119,117 @@ def cmd_md(args):
                  "history."})
 
 
+# ---------------------------------------------------------------- tidy
+#
+# Accept/reject cycles, imports and human editing leave runs of empty
+# paragraphs behind — the "stray paragraph marks" that otherwise get
+# cleaned up by hand. Contributed by one of Dirk's coding agents; reworked
+# to propose the cleanup as markup like every other change.
+
+def empty_paragraph_runs(content):
+    """Deletion ranges that collapse runs of empty body paragraphs. Pure.
+
+    Each run of two or more empty paragraphs keeps its first one; a run
+    that reaches the document end keeps only the undeletable final mark.
+    Tables and their cells are left untouched.
+    """
+    def para_text(el):
+        return "".join(pe.get("textRun", {}).get("content", "")
+                       for pe in el.get("paragraph", {}).get("elements", []))
+
+    ranges, empties = [], []
+    for el in content:
+        if "paragraph" in el and para_text(el) == "\n":
+            empties.append(el)
+            continue
+        if len(empties) > 1:
+            ranges.append((empties[1]["startIndex"], empties[-1]["endIndex"]))
+        empties = []
+    if len(empties) > 1:
+        # The run reaches the document end: the final paragraph mark can
+        # never be deleted, so everything before it goes.
+        ranges.append((empties[0]["startIndex"], empties[-1]["startIndex"]))
+    return ranges
+
+
+def cmd_tidy(args):
+    """Collapse runs of empty paragraphs.
+
+    By default the superfluous paragraphs are shaded pink — a proposed
+    deletion like any other, resolved with `markup accept|reject`.
+    --direct removes them immediately (needs the user's consent).
+    """
+    from googleapiclient.errors import HttpError
+
+    doc_id = parse_doc_id(args.doc)
+    creds = load_credentials(args)
+    docs, drive = services(creds)
+    document = fetch_document(docs, doc_id)
+    ranges = empty_paragraph_runs(document.get("body", {}).get("content", []))
+
+    # Empty lines can be deliberate layout — a manuscript had 19 legitimate
+    # runs (seen live, almost flattened). Scope the cleanup rather than
+    # sweeping the whole document.
+    if args.context:
+        dt = DocText(document)
+        c = dt.text.find(args.context)
+        if c < 0:
+            fail(f"Context text not found in document: {args.context!r}")
+        lo = dt.doc_index(c)
+        hi = dt.doc_index(c + len(args.context))
+        ranges = [(s, t) for s, t in ranges if lo <= s <= hi]
+    if args.nth is not None:
+        if args.nth < 1 or args.nth > len(ranges):
+            fail(f"--nth {args.nth} out of range; found {len(ranges)} "
+                 f"run(s).")
+        ranges = [ranges[args.nth - 1]]
+
+    if not ranges:
+        out({"ok": True, "docId": doc_id, "runs": 0,
+             "note": "No runs of empty paragraphs found."})
+    if args.dry_run:
+        out({"ok": True, "docId": doc_id, "dry_run": True,
+             "runs": len(ranges), "note": "Nothing was written."})
+
+    if args.direct:
+        # One request per run, back to front: some ranges (e.g. right
+        # before a table) are refused by the API — the rest should still
+        # be cleaned up.
+        done, skipped = 0, 0
+        for s, t in sorted(ranges, reverse=True):
+            try:
+                docs.documents().batchUpdate(
+                    documentId=doc_id, body={"requests": [
+                        {"deleteContentRange": {"range": {
+                            "startIndex": s, "endIndex": t}}}]}).execute()
+                done += 1
+            except HttpError:
+                skipped += 1
+        out({"ok": True, "docId": doc_id, "mode": "direct",
+             "runs_removed": done, "runs_skipped": skipped,
+             "note": "Runs of empty paragraphs collapsed to a single "
+                     "one. Direct write — undo via version history."})
+
+    if not can_edit(drive, doc_id):
+        fail("Tidying needs edit rights.",
+             hint="Set the share link to Editor, or nothing can be "
+                  "shaded or removed.")
+    requests = [{"updateParagraphStyle": {
+        "range": {"startIndex": s, "endIndex": t},
+        "paragraphStyle": {"shading": {"backgroundColor": {
+            "color": {"rgbColor": MARK_DELETE_BG}}}},
+        "fields": "shading"}} for s, t in sorted(ranges, reverse=True)]
+    try:
+        docs.documents().batchUpdate(
+            documentId=doc_id, body={"requests": requests}).execute()
+    except HttpError as err:
+        fail("Tidy markup failed", detail=str(err))
+    out({"ok": True, "docId": doc_id, "mode": "markup",
+         "runs": len(ranges),
+         "note": "Superfluous empty paragraphs shaded pink — a proposed "
+                 "deletion. Resolve with `markup accept|reject`."})
+
+
 # ---------------------------------------------------------------- main
 
 def main():
@@ -3112,9 +3279,10 @@ def main():
     f = ssub.add_parser("format")
     f.add_argument("doc")
     f.add_argument("--find", required=True)
-    f.add_argument("--heading", type=int, choices=range(1, 7),
-                   help="make the matched paragraph a heading; --find must "
-                        "cover the whole paragraph")
+    f.add_argument("--heading", type=int, choices=range(0, 7),
+                   help="make the matched paragraph a heading (0 turns a "
+                        "heading back into body text); --find must cover "
+                        "the whole paragraph")
     f.add_argument("--bold", action="store_true")
     f.add_argument("--italic", action="store_true")
     f.add_argument("--link", help="wrap the matched text in this URL")
@@ -3142,6 +3310,20 @@ def main():
                              "only with explicit user consent")
         sp.add_argument("--key")
         sp.set_defaults(func=cmd_suggest)
+
+    s = sub.add_parser("tidy", help="collapse runs of empty paragraphs "
+                                    "(as pink markup; --direct removes now)")
+    s.add_argument("doc")
+    s.add_argument("--dry-run", action="store_true")
+    s.add_argument("--context",
+                   help="only tidy runs inside this text span — empty "
+                        "lines elsewhere may be deliberate layout")
+    s.add_argument("--nth", type=int,
+                   help="only the Nth run (1-based, after --context)")
+    s.add_argument("--direct", action="store_true",
+                   help="remove immediately instead of proposing as markup; "
+                        "needs the user's explicit consent")
+    s.set_defaults(func=cmd_tidy)
 
     s = sub.add_parser("markup", help="accept or reject Remy's colour markup")
     msub = s.add_subparsers(dest="action", required=True)

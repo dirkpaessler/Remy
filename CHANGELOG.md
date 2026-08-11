@@ -1,5 +1,25 @@
 # Changelog
 
+## 0.8.0 — 2026-08-11
+
+Two features contributed by one of Dirk's own coding agents, adopted
+through the front door:
+
+- **`remy.py tidy`** collapses runs of empty paragraphs — the stray
+  paragraph marks that accept/reject cycles, imports and human editing
+  leave behind. Reworked from the contribution to fit the house rule: by
+  default the superfluous paragraphs are shaded pink as a proposed
+  deletion, resolved with `markup accept|reject`; `--direct` (with the
+  user's consent) removes them immediately.
+- **`suggest format --heading 0`** turns a heading back into body text —
+  formatting could previously only go towards a heading, never back.
+  Also reachable via MCP.
+- Root-cause fix for one source of stray marks: the Markdown import left
+  its placeholder paragraph after every inserted table; it is now removed
+  (best effort — where the Docs model insists on a paragraph, e.g. a
+  table at the very end, the line stays).
+- The MCP server gains `tidy` and heading 0 on `suggest_format`.
+
 ## 0.7.2 — 2026-08-10
 
 - A degraded SUGGEST write now cleans up after itself. Google's

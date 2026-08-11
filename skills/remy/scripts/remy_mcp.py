@@ -127,17 +127,31 @@ def suggest_insert(url: str, text: str, after: str = "", before: str = "",
 
 
 @mcp.tool()
-def suggest_format(url: str, find: str, heading: int = 0,
+def suggest_format(url: str, find: str, heading: int = -1,
                    bold: bool = False, italic: bool = False,
                    link: str = "", all_occurrences: bool = False) -> dict:
-    """Propose a format change (heading 1-6, bold, italic, or a link): the
-    old text is struck through in its old format and the same text is
-    re-inserted in the new format, mint-highlighted — resolved with
-    markup accept|reject like any other change. For heading, find must
-    cover a whole paragraph."""
+    """Propose a format change (heading 1-6, 0 = back to body text; bold,
+    italic, or a link): the old text is struck through in its old format
+    and the same text is re-inserted in the new format, mint-highlighted —
+    resolved with markup accept|reject like any other change. For heading,
+    find must cover a whole paragraph; -1 means no paragraph change."""
     return run(remy.cmd_suggest, doc=url, action="format", find=find,
-               heading=heading or None, bold=bold, italic=italic,
-               link=link or None, all=all_occurrences, **_SUGGEST_DEFAULTS)
+               heading=None if heading < 0 else heading, bold=bold,
+               italic=italic, link=link or None, all=all_occurrences,
+               **_SUGGEST_DEFAULTS)
+
+
+@mcp.tool()
+def tidy(url: str, context: str = "", nth: int = 0,
+         dry_run: bool = False, user_agreed: bool = False) -> dict:
+    """Collapse runs of empty paragraphs — the stray paragraph marks left
+    behind by editing. ALWAYS dry_run first and scope with context/nth:
+    empty lines elsewhere may be deliberate layout, and a document-wide
+    sweep needs the user's explicit blessing. By default the paragraphs
+    are shaded pink as a proposed deletion, resolved with the markup tool;
+    user_agreed=True (after asking) removes them immediately."""
+    return run(remy.cmd_tidy, doc=url, context=context or None,
+               nth=nth or None, dry_run=dry_run, direct=user_agreed)
 
 
 @mcp.tool()
