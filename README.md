@@ -1,4 +1,4 @@
-# Remy V0.5 🐀
+# Remy V0.9 🐀
 
 *The invisible sous-chef for Google Docs.*
 
@@ -17,17 +17,20 @@ Science. Give it
 the sharing link to a Google Doc and it works on the document alongside you
 and your colleagues — proofreading, rewriting, translating, answering
 comments — while you also work on it. Every change it makes is **visible and
-reversible**. Text it wants to remove is struck through rather than deleted,
-and you decide what actually happens. In the end it will clean up the
-document.
+reversible**: Remy proposes its changes as native Google Docs suggestions —
+tracked changes with Accept/Reject buttons, exactly as a human collaborator
+in suggesting mode — and you decide what actually happens. In the end it
+will clean up the document.
 
-This is what it looks like (Remy has corrected a typo):
+If you prefer, Remy can mark its changes as coloured markup instead
+(ask for it, or pass `--markup`): proposed deletions struck through in
+pink, insertions in mint, resolved with `markup accept|reject`. This is
+what that looks like (Remy has corrected a typo):
 
 ![Remy's markup: the old wording struck through in pink, the new wording in mint](docs/img/markup-example.png)
 
-Note: Google's APIs do not support native "suggestions" yet. Native
-suggestions are in a closed beta — email
-[remy@dirkpaessler.com](mailto:remy@dirkpaessler.com) to test them.
+Markup is also the automatic fallback on the rare documents where the
+suggestion write mode does not work — Remy probes before it writes.
 
 ## Minimizes AI's blast-radius through a minimalistic security concept
 
@@ -126,13 +129,18 @@ meant to be passed around.*
 
 ## 4. What Remy's changes look like
 
-Open the document in your browser and you will see two colours.
+Open the document in your browser and you will see ordinary Google Docs
+suggestions — the same tracked changes a colleague in suggesting mode
+produces, each with its Accept/Reject buttons. Nothing is deleted before
+you give your ok, and colleagues can keep reading the document normally in
+the meantime.
+
+If you ask Remy for markup mode instead, you get two colours:
 
 ![Mint for added text, pink strikethrough for proposed removals](docs/img/markup-example.png)
 
-The struck-out words are still there. Remy does not delete anything before
-you give your ok; it shows you what it would remove and waits. Colleagues
-can keep reading the document normally in the meantime.
+Here too the struck-out words are still there; `markup accept|reject`
+(or asking Remy) resolves them in one pass.
 
 ## 5. Things you can say
 
@@ -290,9 +298,9 @@ See [`SKILL.md`](skills/remy/SKILL.md) for the command reference and
 python3 skills/remy/tests/test_remy.py
 ```
 
-91 tests, no network, no credentials, no dependencies. They cover what is
-expensive to get wrong: that `remy.py` carries no preview API surface,
-UTF-16 index arithmetic, anchor disambiguation, the language guard, that the
+90 tests, no network, no credentials, no dependencies. They cover what is
+expensive to get wrong: the suggestion write mode and its accept/reject
+mapping, UTF-16 index arithmetic, anchor disambiguation, the language guard, that the
 markup colours collide with none of the 81 swatches in the Google Docs
 picker, the picture-markup arithmetic and its accept/reject resolution, that
 a closed `@@remy` tag is never reported twice, and that the docs still
@@ -307,27 +315,20 @@ cannot see your Drive, your mail, or anything else.
 
 ## About real suggestions
 
-Remy can produce genuine Google Docs suggestions — tracked changes with
-Accept/Reject buttons, working even on a comment-only link. But: That code
-is not in this build. Yet. Google doesn't allow this until the API features
-are public. Yet.
+Remy writes genuine Google Docs suggestions — tracked changes with
+Accept/Reject buttons, working even on a comment-only link. `writeMode:
+SUGGEST` spent summer 2026 in the [Workspace Developer
+Preview](https://developers.google.com/workspace/preview) (whose terms kept
+the code out of this public build) and became **generally available in
+October 2026**; since Remy 0.9.0 suggestions are built in and the default.
 
-`writeMode: SUGGEST` entered the [Workspace Developer
-Preview](https://developers.google.com/workspace/preview) on 7 July 2026. It
-is not generally available, and the terms are explicit: preview features may
-not be included in public applications, nor exposed to users outside your
-own company. So the code is *absent*, not disabled — verifiable by reading
-`remy.py`, and enforced by a test. Remy loads an optional `preview.py`
-module where one exists; enrolled organisations keep it in an internal
-build.
-
-Two things make this more than caution:
-
-- The API lies when you are not enrolled. It accepts `writeMode: SUGGEST`
-  without error and then edits the document directly, while reporting a
-  suggestion.
-- Without enrolment a commenting link cannot be written to at all, which is
-  why markup mode needs an editing link.
+One caution survives from the preview days: the API has been seen accepting
+`writeMode: SUGGEST` without error and then editing the document directly.
+Remy therefore never trusts the flag — it probes the capability once per
+service account (`remy.py probe <doc>`), verifies every suggestion write
+afterwards, and if a write silently degraded, it undoes its own edits and
+re-proposes them as coloured markup. Nothing lands in your document
+unmarked.
 
 ## Licence
 

@@ -4,8 +4,8 @@
     python3 skills/remy/tests/test_remy.py
 
 The suite deliberately covers the things that are expensive to get wrong:
-the public/preview separation, UTF-16 index arithmetic, anchor
-disambiguation, the markup colours, and the @@remy task loop.
+the suggestion write mode, UTF-16 index arithmetic, anchor disambiguation,
+the markup colours, and the @@remy task loop.
 """
 
 import contextlib
@@ -68,47 +68,73 @@ def bg(hexcolour):
     return {"color": {"rgbColor": {"red": r, "green": g, "blue": b}}}
 
 
-# --------------------------------------------------------------- the separation
+# --------------------------------------------------------------- suggestions
 
-class TestPublicPreviewSeparation(unittest.TestCase):
-    """The property that would be embarrassing to break silently."""
+class FakeDocsService:
+    """Captures batchUpdate bodies instead of talking to Google."""
 
-    FORBIDDEN = ["writeMode", "acceptSuggestion", "rejectSuggestion",
-                 "deleteSuggestion", "writeControl"]
+    def __init__(self):
+        self.bodies = []
 
-    def test_remy_py_never_contains_preview_api(self):
+    def documents(self):
+        return self
+
+    def batchUpdate(self, documentId=None, body=None):
+        self.bodies.append(body)
+
+        class _Request:
+            def execute(_self):
+                return {}
+        return _Request()
+
+
+class TestSuggestionMachinery(unittest.TestCase):
+    """Suggestions are GA in the Docs API (October 2026) and part of this
+    build. What used to be the public/preview separation is now the opposite
+    property: the suggestion surface must BE here, and must stay honest —
+    a SUGGEST write is never trusted without the probe."""
+
+    def test_the_suggestion_api_lives_in_remy_py(self):
         with open(REMY_PY, encoding="utf-8") as fh:
             source = fh.read()
-        for token in self.FORBIDDEN:
-            self.assertNotIn(
-                token, source,
-                f"{token!r} must live in preview.py, never in remy.py — "
-                f"remy.py is the publicly distributed file.")
+        for token in ("writeControl", "acceptSuggestion", "rejectSuggestion",
+                      "deleteSuggestion"):
+            self.assertIn(token, source,
+                          f"{token!r} is part of the GA suggestion surface "
+                          f"and belongs in remy.py since 0.9.0")
+        self.assertFalse(os.path.exists(PREVIEW_PY),
+                         "preview.py is obsolete since 0.9.0 — its code "
+                         "lives in remy.py now")
 
-    def test_without_preview_module_suggestions_are_impossible(self):
-        if os.path.exists(PREVIEW_PY):
-            self.skipTest("preview.py present — this is the Remy2 build")
-        self.assertIsNone(remy._preview)
-        self.assertFalse(remy.suggestions_available(None, "doc"))
+    def test_suggest_write_runs_in_suggest_mode(self):
+        docs = FakeDocsService()
+        remy.suggest_write(docs, "doc", [{"insertText": {}}])
+        self.assertEqual(docs.bodies[0]["writeControl"]["writeMode"],
+                         "SUGGEST")
 
-    def test_preview_module_implements_the_documented_interface(self):
-        if not os.path.exists(PREVIEW_PY):
-            self.skipTest("public build has no preview module")
-        spec2 = importlib.util.spec_from_file_location("preview_ut", PREVIEW_PY)
-        preview = importlib.util.module_from_spec(spec2)
-        spec2.loader.exec_module(preview)
-        for fn in ("supported", "suggest", "resolve"):
-            self.assertTrue(callable(getattr(preview, fn, None)),
-                            f"preview.py must expose {fn}()")
-
-    def test_env_var_alone_cannot_enable_suggestions(self):
-        if os.path.exists(PREVIEW_PY):
-            self.skipTest("preview.py present — this is the Remy2 build")
-        os.environ["REMY_ENABLE_PREVIEW_SUGGESTIONS"] = "1"
-        try:
-            self.assertFalse(remy.suggestions_available(None, "doc"))
-        finally:
-            os.environ.pop("REMY_ENABLE_PREVIEW_SUGGESTIONS", None)
+    def test_resolve_suggestions_maps_each_action_to_its_request(self):
+        # resolve_suggestions imports HttpError for its error path; the
+        # suite runs without googleapiclient, so satisfy the import with
+        # a stand-in (the happy path never touches it).
+        if "googleapiclient.errors" not in sys.modules:
+            import types
+            errors = types.ModuleType("googleapiclient.errors")
+            errors.HttpError = type("HttpError", (Exception,), {})
+            pkg = types.ModuleType("googleapiclient")
+            pkg.errors = errors
+            sys.modules["googleapiclient"] = pkg
+            sys.modules["googleapiclient.errors"] = errors
+            self.addCleanup(sys.modules.pop, "googleapiclient", None)
+            self.addCleanup(sys.modules.pop, "googleapiclient.errors", None)
+        for action, key in [("accept", "acceptSuggestion"),
+                            ("reject", "rejectSuggestion"),
+                            ("delete", "deleteSuggestion")]:
+            docs = FakeDocsService()
+            n = remy.resolve_suggestions(docs, "doc", action, ["a", "b"])
+            self.assertEqual(n, 2)
+            self.assertEqual(docs.bodies[0]["requests"],
+                             [{key: {"suggestionId": "a"}},
+                              {key: {"suggestionId": "b"}}])
 
 
 # --------------------------------------------------------------- parsing

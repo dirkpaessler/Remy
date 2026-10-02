@@ -12,9 +12,9 @@ Deterministic CLI for collaborating on a Google Doc shared by link. Reads
 anonymously; with a service account key it proposes changes as reviewable
 coloured markup, and reads, writes and resolves comments.
 
-This is the public build. It contains no Developer Preview code, so it cannot
-create, accept or reject native Google Docs suggestions — see the preview hook
-below.
+Changes are proposed as native Google Docs suggestions (tracked changes)
+wherever the API honours SUGGEST mode — probed once, cached — and as
+reviewable coloured markup on request or as the fallback.
 
 All output is JSON on stdout. Exit codes: 0 ok, 1 error, 2 ambiguous anchor.
 """
@@ -32,7 +32,7 @@ SCOPES = [
     "https://www.googleapis.com/auth/documents",
     "https://www.googleapis.com/auth/drive",
 ]
-VERSION = "0.8.0"  # keep in step with .claude-plugin/plugin.json + CHANGELOG
+VERSION = "0.9.0"  # keep in step with .claude-plugin/plugin.json + CHANGELOG
 # The version file is a GitHub release asset (published by the tag workflow),
 # so GitHub's public download counter doubles as an anonymous tally of active
 # installations — nothing about the user or their documents is ever sent.
@@ -56,43 +56,111 @@ MARK_DELETE_BG = {"red": 0.9922, "green": 0.5882, "blue": 0.8353}  # #FD96D5 pin
 COLOUR_TOLERANCE = 0.012  # ~3/255: guards float rounding, nothing else
 OBJ_PLACEHOLDER = "￼"  # object replacement char, 1 UTF-16 unit
 
-# ---------------------------------------------------------------- preview hook
-# The Docs API can write real tracked-change suggestions, but only for Cloud
-# projects enrolled in the Google Workspace Developer Preview — whose terms
-# forbid including preview features in publicly distributed applications.
-# This build therefore contains none of that code. An enrolled organisation
-# can drop a `preview.py` next to this file; see the Remy2 repository.
-#
-# The module must provide, each taking this module as `host`:
-#   supported(host, docs, doc_id, force_recheck=False) -> bool
-#   suggest(host, docs, doc_id, requests) -> None          # raises HttpError
-#   resolve(host, docs, doc_id, action, ids) -> int        # accept/reject/delete
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-try:
-    import preview as _preview
-except ImportError:
-    _preview = None
+# ---------------------------------------------------------------- suggestions
+# Real tracked-change suggestions: batchUpdate with writeControl.writeMode =
+# SUGGEST, resolved by id with acceptSuggestion / rejectSuggestion /
+# deleteSuggestion. Generally available since October 2026 — no Developer
+# Preview enrollment any more. The capability is still probed once per
+# service account (result cached), because a SUGGEST write that silently
+# degrades to a DIRECT edit produces no error and has been seen live.
+
+PROBE_MARKER = "​"  # zero-width space, used by the capability probe
+
+
+def suggest_write(docs, doc_id, requests):
+    """Run a batchUpdate in SUGGEST write mode. Raises HttpError on failure.
+
+    The API accepts writeMode=SUGGEST even where suggesting is not honoured —
+    and then applies the edits DIRECTLY instead of suggesting them. Never
+    call this without checking suggestions_available() first.
+    """
+    return docs.documents().batchUpdate(
+        documentId=doc_id,
+        body={"requests": requests, "writeControl": {"writeMode": "SUGGEST"}},
+    ).execute()
+
+
+def resolve_suggestions(docs, doc_id, action, ids):
+    """accept / reject / delete suggestions by id."""
+    from googleapiclient.errors import HttpError
+
+    key = {"accept": "acceptSuggestion", "reject": "rejectSuggestion",
+           "delete": "deleteSuggestion"}[action]
+    requests = [{key: {"suggestionId": sid}} for sid in ids]
+    try:
+        docs.documents().batchUpdate(
+            documentId=doc_id, body={"requests": requests}).execute()
+    except HttpError as err:
+        fail(f"Could not {action} suggestions.", detail=str(err)[:400])
+    return len(requests)
+
+
+def probe_suggestions(docs, doc_id):
+    """Determine empirically whether writeMode=SUGGEST really suggests.
+
+    Inserts a zero-width marker in SUGGEST mode, checks whether it arrived as
+    a suggestion, then removes it again — restoring the document byte for byte
+    either way. This costs one entry in the version history and is the only
+    trustworthy signal, because a degraded SUGGEST write produces no error.
+    """
+    from googleapiclient.errors import HttpError
+
+    doc = fetch_document(docs, doc_id)
+    body = doc.get("body", {}).get("content", [])
+    if not body:
+        return False
+    before = set(suggestion_ids(doc))
+    idx = body[-1].get("endIndex", 2) - 1
+    try:
+        suggest_write(docs, doc_id, [
+            {"insertText": {"location": {"index": idx}, "text": PROBE_MARKER}}
+        ])
+    except HttpError:
+        return False  # cannot write at all -> comments only
+
+    after = fetch_document(docs, doc_id)
+    dt = DocText(after)
+    # Only a suggestion that is NEW and holds our marker proves the point; the
+    # document may well contain other people's suggestions already.
+    mine = [sid for sid, v in suggestion_ids(after).items()
+            if sid not in before and PROBE_MARKER in "".join(v["inserted"])]
+    supported = bool(mine)
+
+    # Clean up. Rejecting works with comment-only rights; deleting the range
+    # outright needs write access, so it is only the fallback.
+    if mine:
+        try:
+            resolve_suggestions(docs, doc_id, "reject", mine)
+            return supported
+        except SystemExit:
+            pass
+    hits = dt.find(PROBE_MARKER)
+    if hits:
+        a, b = hits[-1]
+        try:
+            docs.documents().batchUpdate(documentId=doc_id, body={"requests": [
+                {"deleteContentRange": {"range": {
+                    "startIndex": dt.doc_index(a), "endIndex": dt.doc_index(b)}}}
+            ]}).execute()
+        except HttpError:
+            pass
+    return supported
 
 
 def suggestions_available(docs, doc_id, force_recheck=False):
-    """True only if real suggestions are installed AND proven to work."""
-    if _preview is None:
-        return False
-    return bool(_preview.supported(sys.modules[__name__], docs, doc_id,
-                                   force_recheck=force_recheck))
+    """Cached per service account: do real suggestions work?
 
-
-def preview_missing(action="that"):
-    fail(f"Real Google Docs suggestions are not part of this build, so {action} "
-         f"is unavailable.",
-         why="Creating, accepting and rejecting suggestions relies on the "
-             "Google Workspace Developer Preview, whose terms forbid shipping "
-             "preview features publicly.",
-         alternative="Markup mode does the same job with generally available "
-                     "APIs: mint insertions, pink struck-through deletions, "
-                     "resolved with `markup accept|reject`.",
-         internal_use="Organisations enrolled in the preview can use the Remy2 "
-                      "build, which adds the suggestion module.")
+    The write mode is a property of the API access, not of one document, so
+    one probe answers for every document the key can reach.
+    """
+    state = load_state()
+    key = "suggest_supported"
+    if not force_recheck and key in state:
+        return state[key]
+    result = probe_suggestions(docs, doc_id)
+    state[key] = result
+    save_state(state)
+    return result
 
 
 # ---------------------------------------------------------------- utilities
@@ -517,8 +585,8 @@ def resolve_anchor(dt, needle, all_=False, nth=None, context=None):
 def suggestion_ids(document):
     """Map suggestion id -> {inserted: [...], deleted: [...]} of its text.
 
-    Reading these ids is generally available; the runs carry them. Resolving a
-    suggestion is a preview-only operation and lives in the preview module.
+    Reading these ids comes with the document — the runs carry them.
+    Resolving a suggestion by id is resolve_suggestions().
     """
     found = {}
 
@@ -1108,13 +1176,19 @@ def apply_edits(docs, drive, doc_id, edits, fallback=True, direct=False,
     """edits: list of {doc_range(start,end), old, new}, any order.
 
     Every change Remy makes is visible and reversible. Order of preference:
-      1. real suggestions, if the probe confirms they work;
-      2. coloured markup — the default whenever the document is editable;
+      1. real suggestions — the default, confirmed by the capability probe;
+      2. coloured markup — on explicit request (--markup), or the fallback
+         when suggestions do not work and the document is editable;
       3. a comment describing the change, when Remy may only comment.
     `direct` is the sole escape hatch and requires explicit user consent.
     """
     edits = sorted(edits, key=lambda e: e["doc_range"][0], reverse=True)
     comment_only = markup is False  # the user's explicit --comment-only
+    if markup and not direct and not can_edit(drive, doc_id):
+        fail("Markup was requested, but this share link allows commenting "
+             "only — markup is a real edit and needs Editor rights.",
+             hint="Drop --markup: real suggestions work on a comment-only "
+                  "link. Or have the user set the link to Editor.")
     if markup is None and not direct:
         markup = (not suggestions_available(docs, doc_id)
                   and can_edit(drive, doc_id))
@@ -1157,8 +1231,8 @@ def apply_edits(docs, drive, doc_id, edits, fallback=True, direct=False,
     if not suggestions_available(docs, doc_id):
         if not fallback:
             fail("Real suggestions are unavailable and --no-fallback was given.",
-                 hint="Enroll the Cloud project in the Workspace Developer "
-                      "Preview, or pass --direct to edit the document directly.")
+                 hint="Run `remy.py probe <doc>` to re-check the capability, "
+                      "or pass --direct to edit the document directly.")
         return post_as_comments(
             drive, doc_id, edits,
             "Changes described as comments because --comment-only was given."
@@ -1171,7 +1245,7 @@ def apply_edits(docs, drive, doc_id, edits, fallback=True, direct=False,
 
     before = count_suggestions(fetch_document(docs, doc_id))
     try:
-        _preview.suggest(sys.modules[__name__], docs, doc_id, requests)
+        suggest_write(docs, doc_id, requests)
     except HttpError as err:
         if not fallback:
             fail("Docs API batchUpdate failed", detail=str(err))
@@ -1181,7 +1255,8 @@ def apply_edits(docs, drive, doc_id, edits, fallback=True, direct=False,
     after_doc = fetch_document(docs, doc_id)
     if count_suggestions(after_doc) <= before:
         # SUGGEST silently degraded to a direct write (Google's honouring
-        # of the preview can flap for minutes at a time — seen live).
+        # of SUGGEST mode can flap for minutes at a time — seen live while
+        # the feature was in preview; the guard is kept post-GA).
         # Undo our own write and re-propose everything as markup; the
         # user should never have to clean up after us.
         save_state({**load_state(), "suggest_supported": False})
@@ -1216,9 +1291,9 @@ def apply_edits(docs, drive, doc_id, edits, fallback=True, direct=False,
                 "action_required": "Undo via File > Version history in the "
                                    "document. Remy has disabled suggestion "
                                    "mode for now.",
-                "may_be_temporary": "Google's preview honouring can flap. "
-                                    "Run `remy.py probe <doc>` later — a "
-                                    "successful probe re-enables "
+                "may_be_temporary": "Google's honouring of SUGGEST mode can "
+                                    "flap. Run `remy.py probe <doc>` later — "
+                                    "a successful probe re-enables "
                                     "suggestions."}
     return {"ok": True, "mode": "suggestion", "edits": len(edits)}
 
@@ -1453,10 +1528,6 @@ def cmd_suggestions(args):
              "note": "Nothing changed. Use `suggestions accept|reject` "
                      "with --id, or --all."})
 
-    if _preview is None:
-        ing = {"accept": "accepting", "reject": "rejecting",
-               "delete": "deleting"}[args.action]
-        preview_missing(f"{ing} a suggestion")
     if not found:
         out({"ok": True, "docId": doc_id, "count": 0,
              "note": "No suggestions in this document."})
@@ -1471,7 +1542,7 @@ def cmd_suggestions(args):
     if unknown:
         fail("Unknown suggestion id(s).", unknown=unknown,
              available=list(found))
-    n = _preview.resolve(sys.modules[__name__], docs, doc_id, args.action, ids)
+    n = resolve_suggestions(docs, doc_id, args.action, ids)
     done = args.action + ("d" if args.action.endswith("e") else "ed")
     out({"ok": True, "docId": doc_id, "action": args.action, "resolved": n,
          "note": f"{n} suggestion(s) {done}. This is permanent — "
@@ -1517,7 +1588,7 @@ def cmd_image(args):
     if suggestions_available(docs, doc_id):
         mode = "suggestion"
         try:
-            _preview.suggest(sys.modules[__name__], docs, doc_id, requests)
+            suggest_write(docs, doc_id, requests)
         except HttpError as err:
             fail("Could not insert the image as a suggestion.",
                  detail=str(err)[:300])
@@ -1706,12 +1777,9 @@ def cmd_check(args):
                 "the suggested regions.")
     except Exception as e:
         report["docs_api_read"] = f"failed: {e}"
-    if _preview is None:
-        report["real_suggestions"] = False
-    else:
-        state = load_state()
-        report["real_suggestions"] = state.get(
-            "suggest_supported", "unknown — run `remy.py probe <doc>`")
+    state = load_state()
+    report["real_suggestions"] = state.get(
+        "suggest_supported", "unknown — run `remy.py probe <doc>`")
     if report["real_suggestions"] is True:
         report["write_mode"] = ("suggestion — real tracked changes, which work "
                                 "even with comment-only access")
@@ -2109,8 +2177,7 @@ def cmd_setup(args):
     project = args.project_id
     if not project and os.path.exists(DEFAULT_KEY_PATH):
         # Reuse the project the current key belongs to. Deriving a fresh name
-        # here would strand an existing setup — including, painfully, a
-        # project that has been enrolled in the Developer Preview.
+        # here would strand an existing setup.
         try:
             with open(DEFAULT_KEY_PATH, encoding="utf-8") as fh:
                 data = json.load(fh)
@@ -2211,27 +2278,10 @@ def cmd_setup(args):
             "Nothing here costs money: the Docs and Drive APIs are free and "
             "no billing account is attached.",
         ],
-        "optional_upgrade": {
-            "what": "Real Google Docs suggestions instead of coloured markup — "
-                    "they also work on a comment-only link.",
-            "how": "Apply to the Google Workspace Developer Preview Program at "
-                   "https://developers.google.com/workspace/preview and give "
-                   f"it this Cloud project number: {number if ok else '<see `gcloud projects describe`>'}",
-            "then": "Add the preview module, which is not part of this "
-                    "build, and run `remy.py probe <doc>`.",
-            "caveats": [
-                "Approval takes a couple of days; it is a best-effort program.",
-                "The form asks for a Google Workspace account, so a personal "
-                "@gmail.com address may not be accepted.",
-                "Enrollment is per Cloud project. The FAQ says service "
-                "accounts cannot be added to the program — that refers to "
-                "enrolling an account directly; enrolling the project this "
-                "service account lives in is what works.",
-                "Preview terms forbid passing preview features on to people "
-                "outside your own company, so each person enrolls their own "
-                "project.",
-            ],
-        },
+        "suggestions": "Changes are proposed as real Google Docs suggestions "
+                       "(tracked changes); they even work on a comment-only "
+                       "link. The first write probes the capability and "
+                       "caches the result — `remy.py probe <doc>` shows it.",
     })
 
 
@@ -2239,25 +2289,6 @@ def cmd_probe(args):
     doc_id = parse_doc_id(args.doc)
     creds = load_credentials(args)
     docs, _ = services(creds)
-    if _preview is None:
-        out({"ok": True, "docId": doc_id, "real_suggestions": False,
-             "note": "This build cannot create suggestions — the code is not "
-                     "in it. Markup mode is the supported default and needs "
-                     "nothing: mint insertions, pink struck-through "
-                     "deletions, resolved with `markup accept|reject`.",
-             "to_enable": [
-                 "Enrol your OWN Cloud project — the one holding the service "
-                 "account key — in the Google Workspace Developer Preview at "
-                 "https://developers.google.com/workspace/preview. The form "
-                 "wants the project NUMBER; `remy.py setup` prints it, or run "
-                 "`gcloud projects describe <id> "
-                 "--format=\"value(projectNumber)\"`. Approval takes a couple "
-                 "of days.",
-                 "Then use the Remy2 build, which adds the suggestion module. "
-                 "It is for internal use only: the preview terms forbid "
-                 "passing preview features to people outside your own "
-                 "company.",
-             ]})
     supported = suggestions_available(docs, doc_id, force_recheck=True)
     out({
         "ok": True,
@@ -2265,10 +2296,10 @@ def cmd_probe(args):
         "real_suggestions": supported,
         "note": ("Real suggestions work — Remy will use them."
                  if supported else
-                 "The suggestion module is installed but this Cloud project "
-                 "is not enrolled in the Developer Preview, so Remy falls "
-                 "back to markup. Enrol the project at "
-                 "https://developers.google.com/workspace/preview."),
+                 "The SUGGEST write mode did not produce a suggestion on "
+                 "this document, so Remy falls back to coloured markup "
+                 "(editable link) or comments. This can be a transient API "
+                 "condition — re-run the probe later."),
         "cached_in": STATE_PATH,
     })
 
@@ -3301,10 +3332,15 @@ def main():
         sp.add_argument("--dry-run", action="store_true",
                         help="show what would change and in which mode, "
                              "without writing anything")
+        sp.add_argument("--markup", dest="markup", action="store_true",
+                        default=None,
+                        help="propose as coloured markup (mint insertions, "
+                             "pink struck-through deletions) instead of a "
+                             "native suggestion; needs an editable link")
         sp.add_argument("--comment-only", dest="markup", action="store_false",
                         default=None,
                         help="describe the change in a comment instead of "
-                             "writing coloured markup into the document")
+                             "writing into the document")
         sp.add_argument("--direct", action="store_true",
                         help="EDIT THE DOCUMENT DIRECTLY without any marking; "
                              "only with explicit user consent")

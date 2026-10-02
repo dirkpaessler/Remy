@@ -2,8 +2,9 @@
 name: remy
 description: >
   Remy — invisible sous-chef for Google Docs. Collaborate on a Google Doc via
-  its share link without opening a browser: propose edits as reviewable
-  coloured markup, add and answer comments, and execute @@remy commands
+  its share link without opening a browser: propose edits as native
+  suggestions (or reviewable coloured markup on request), add and answer
+  comments, and execute @@remy commands
   embedded in the document text or comments. Use whenever the user pastes a
   Google Docs URL and wants proofreading, rewriting, translating,
   restructuring, shortening, suggested improvements, commenting, or wants
@@ -67,8 +68,8 @@ The CLI picks the mode; you do not:
 
 | mode | what lands in the doc | needs |
 |---|---|---|
-| suggestion | real tracked change with Accept/Reject buttons | an optional `preview.py` module, which this build does not include. Where present it works on a **comment-only** link — a commenter may suggest, exactly as in the browser. |
-| **markup** | mint `#96FADB` = inserted text, pink `#FD96D5` + strikethrough = proposed deletion | edit rights, because it is a real edit |
+| **suggestion** (default) | real tracked change with Accept/Reject buttons | works even on a **comment-only** link — a commenter may suggest, exactly as in the browser. Confirmed by a probe, cached per service account. |
+| markup | mint `#96FADB` = inserted text, pink `#FD96D5` + strikethrough = proposed deletion | edit rights, because it is a real edit. Used when the user asks for it (`--markup`), or as the fallback when the probe says suggestions do not work. |
 | comment | a comment describing the change | comment rights only |
 
 Markup never destroys anything: proposed deletions are struck through, so a
@@ -97,9 +98,11 @@ into a paragraph of its own and *the paragraph* is shaded mint instead;
 `markup accept|reject` resolves that like any other change.
 
 `--dry-run` shows the mode and the changes without writing. Use it whenever
-you are unsure. `--comment-only` and `--direct` are opt-outs that need the
-user's explicit consent in this conversation; `--direct` in particular writes
-unmarked changes and should stay unused unless asked for.
+you are unsure. `--markup` proposes coloured markup instead of a native
+suggestion — use it when the user asks for the colours. `--comment-only` and
+`--direct` are opt-outs that need the user's explicit consent in this
+conversation; `--direct` in particular writes unmarked changes and should
+stay unused unless asked for.
 
 **Rewriting and in-place tables.** `runs` dumps every text run with its
 index, link, bold flag and paragraph number; `rewrite` replaces runs by
@@ -120,11 +123,12 @@ markup mode — a direct write, refused on a non-empty document unless
 `--replace` is given. Use it when the user wants a written report moved into
 a Doc; never "import" by pasting raw Markdown with `suggest insert`.
 
-> Suggestion mode is not in this build, so `probe` reports it as unavailable
-> and every change goes out as markup or a comment. That is the intended
-> behaviour, not a fault to work around: do not try to reach the Docs API's
-> suggestion write mode by hand — outside an enrolled Cloud project it is
-> accepted without error and then edits the document **directly**.
+> The Docs API has been seen accepting the suggestion write mode and then
+> editing the document **directly**, without any error. Remy guards against
+> this itself — it probes before the first write, verifies every suggestion
+> write afterwards, and rolls a degraded write back as markup. So never try
+> to reach the suggestion write mode by hand with `--direct`; go through
+> `suggest`, and trust its reported mode.
 
 ## Executing @@remy tasks
 
@@ -158,11 +162,10 @@ is useful context.
 
 `remy.py suggestions list <url>` shows each one with its id and what it would
 insert or delete. **Listing always works.** Accepting or rejecting them
-(`suggestions accept|reject|delete`) needs the optional preview module, which
-this build does not include, and is **permanent** where available — only the
-document's version history undoes it. So never resolve someone else's
-suggestion unless the user asked for it in this conversation, and name what
-you resolved in your report.
+(`suggestions accept|reject|delete`) is **permanent** — only the document's
+version history undoes it. So never resolve someone else's suggestion unless
+the user asked for it in this conversation, and name what you resolved in
+your report.
 
 Replacing a range that contains suggestions also destroys them; prefer
 resolving them explicitly over overwriting them.
@@ -198,8 +201,8 @@ remy.py setup [--guide] [--project-id ID] [--force]
 remy.py import-key [--file <path>]
 ```
 
-Shared flags on `suggest`: `--dry-run`, `--comment-only`, `--direct`,
-`--force-language`, `--no-fallback`.
+Shared flags on `suggest`: `--dry-run`, `--markup`, `--comment-only`,
+`--direct`, `--force-language`, `--no-fallback`.
 
 Notes:
 

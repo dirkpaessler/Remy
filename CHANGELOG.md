@@ -1,5 +1,30 @@
 # Changelog
 
+## 0.9.0 — 2026-10-02
+
+Native Google Docs suggestions for everyone. Google made the suggestion
+write mode and the suggestion-resolution requests **generally available**
+in the Docs API (October 2026), so the code that used to be preview-only
+moves into the public build:
+
+- **Real tracked changes are now the default.** Every `suggest` lands as a
+  genuine Google Docs suggestion with Accept/Reject buttons — and works
+  even on a comment-only share link, where a commenter may suggest exactly
+  as in the browser.
+- **`suggestions accept|reject|delete`** now resolves suggestions (your
+  own and other people's) in every build; it no longer needs a separate
+  module.
+- **Coloured markup stays**, demoted from default to choice and safety
+  net: `--markup` proposes mint/pink markup when the user wants it, and a
+  degraded SUGGEST write still rolls itself back into markup (the 0.7.2
+  guard is kept — Google's honouring of SUGGEST mode has been seen
+  flapping, so Remy keeps probing and verifying rather than trusting the
+  flag). `markup accept|reject` keeps working for documents that still
+  carry markup.
+- The Developer Preview plumbing is gone: no `preview.py` hook, no
+  `REMY_ENABLE_PREVIEW_SUGGESTIONS`, no enrollment instructions in
+  `setup` and `probe`.
+
 ## 0.8.0 — 2026-08-11
 
 Two features contributed by one of Dirk's own coding agents, adopted

@@ -8,8 +8,8 @@
     {
       "name": "remy",
       "source": "./",
-      "version": "0.8.0",
-      "description": "Remy 🐀 — invisible sous-chef for Google Docs. Collaborate on a Google Doc through a share link, without a browser. Proposes every change as reviewable coloured markup, reads and answers comments, and executes @@remy commands left in the document.",
+      "version": "0.9.0",
+      "description": "Remy 🐀 — invisible sous-chef for Google Docs. Collaborate on a Google Doc through a share link, without a browser. Proposes every change as a native suggestion with Accept/Reject buttons (or as reviewable coloured markup on request), reads and answers comments, and executes @@remy commands left in the document.",
       "category": "productivity",
       "license": "MIT",
       "keywords": [
