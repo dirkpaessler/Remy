@@ -4,7 +4,7 @@
 
 ## If you and your team use Google Docs for collaborative writing, then Remy makes Claude your interactive co-author!
 
-![Remy at work](docs/img/remy-hero.png)
+![New in Remy 0.9: your Claude can now make native suggestions in your Google Docs — Accept/Reject buttons, works on comment-only links](docs/img/suggestions-hero.png)
 
 Working on a shared Google Doc together with others using Claude
 Code/Cowork/Chat is cumbersome with the standard skills. With **Remy**
@@ -16,21 +16,16 @@ Remy is a skill you add to your Claude Desktop app or Claude CLI or Claude
 Science. Give it
 the sharing link to a Google Doc and it works on the document alongside you
 and your colleagues — proofreading, rewriting, translating, answering
-comments — while you also work on it. Every change it makes is **visible and
-reversible**: Remy proposes its changes as native Google Docs suggestions —
-tracked changes with Accept/Reject buttons, exactly as a human collaborator
-in suggesting mode — and you decide what actually happens. In the end it
-will clean up the document.
+comments — while you also work on it. Every change it proposes is a
+**native Google Docs suggestion**: tracked changes with Accept/Reject
+buttons, exactly what a human collaborator in suggesting mode produces, and
+you decide what actually happens. This even works on a comment-only link —
+Remy can propose all it wants, but only a human click makes it real.
 
-If you prefer, Remy can mark its changes as coloured markup instead
-(ask for it, or pass `--markup`): proposed deletions struck through in
-pink, insertions in mint, resolved with `markup accept|reject`. This is
-what that looks like (Remy has corrected a typo):
-
-![Remy's markup: the old wording struck through in pink, the new wording in mint](docs/img/markup-example.png)
-
-Markup is also the automatic fallback on the rare documents where the
-suggestion write mode does not work — Remy probes before it writes.
+*(Prefer the old look? Remy can also mark its changes as coloured markup —
+insertions in mint, proposed deletions struck through in pink — just ask
+for it. Markup is also the automatic fallback on the rare documents where
+Google's suggestion write mode misbehaves; Remy probes before it writes.)*
 
 ## Minimizes AI's blast-radius through a minimalistic security concept
 
@@ -95,7 +90,10 @@ their own.
 ## 2. Share the document
 
 Open your Google Doc, click **Share**, and under *General access* choose
-**Anyone with the link**. Set it to **Editor**.
+**Anyone with the link**. **Commenter** is enough: Remy's suggestions work
+over a commenter link, and Google's own permission system then guarantees
+that nothing changes without a human clicking Accept. Choose **Editor** if
+Remy should also be able to accept suggestions and tidy up for you later.
 
 Then paste the link into Claude and say what you want in the same breath:
 
@@ -131,16 +129,16 @@ meant to be passed around.*
 
 Open the document in your browser and you will see ordinary Google Docs
 suggestions — the same tracked changes a colleague in suggesting mode
-produces, each with its Accept/Reject buttons. Nothing is deleted before
+produces, each with its Accept/Reject buttons. Nothing is applied before
 you give your ok, and colleagues can keep reading the document normally in
 the meantime.
 
-If you ask Remy for markup mode instead, you get two colours:
+*Side note: in markup mode (ask for it, or when suggestions are unavailable
+on a document) you get two colours instead — insertions in mint, proposed
+deletions struck through in pink — and `markup accept|reject` (or asking
+Remy) resolves them in one pass:*
 
 ![Mint for added text, pink strikethrough for proposed removals](docs/img/markup-example.png)
-
-Here too the struck-out words are still there; `markup accept|reject`
-(or asking Remy) resolves them in one pass.
 
 ## 5. Things you can say
 
@@ -150,7 +148,7 @@ more!).
 
 - **`Replace every "client" with "partner"`**: changed everywhere in one pass
 - **`Find the statistics jargon and rewrite it for normal people`**: each
-  passage marked up
+  passage gets its own suggestion
 - **`Shorten the introduction by 40%`**: a tighter version proposed beside
   the original
 - **`Build a reference list from the citations in the text`**: citations
@@ -181,21 +179,25 @@ don't use Claude to ask for something.
 Remy asks what should happen to its changes. You can also just say it
 yourself, at any time, even days later:
 
-**`Remy, accept the changes`** — struck-out text goes, the colours vanish,
-the new wording stays as ordinary text.
+**`Remy, accept the changes`** — the suggestions are applied and become
+ordinary text. (This needs an Editor link; on a commenter link clicking
+**Accept all** in the document does the same.)
 
-**`Remy, undo the changes`** — everything Remy added disappears and the
-struck-out text comes back. The document returns exactly to how it was. If
-you would rather go through them one at a time, just clear the highlighting
-by hand as you accept each one. Remy does not mind either way.
+**`Remy, undo the changes`** — Remy withdraws its own suggestions and the
+document returns exactly to how it was; this works even on a commenter
+link. And if you would rather go through them one at a time, just use the
+Accept/Reject buttons yourself. Remy does not mind either way.
 
 ## If something goes wrong
 
 **Claude says it can only read the document.** The sharing link of the
 GoogleDoc is set to *Viewer*. Check the Share settings.
 
-**Remy writes comments instead of marking up the text.** The link is set to
-*Commenter*. Change it to *Editor* to have changes shown in the text itself.
+**Remy writes comments instead of suggestions.** That only happens on the
+rare document where Google's suggestion mode fails Remy's probe *and* the
+link allows commenting only (so markup is impossible too). Setting the link
+to *Editor* gets you coloured markup there; on normal documents,
+suggestions simply work.
 
 **Claude cannot find the key file.** Tell it where you put it — *"it's on my
 Desktop"* — or drag the file into the chat window.
@@ -226,7 +228,7 @@ Config.
 - **Anchor its comments to a sentence:** Comments made through the API land
   in the document's general comment list, not pinned to the text. Google
   allows nothing else by this route, which is why the important work is
-  shown as coloured text instead.
+  proposed as suggestions in the text instead.
 
 # No guarantees, no liability
 
